@@ -1,0 +1,40 @@
+import json
+from playwright.sync_api import sync_playwright
+R=[]
+def ok(n,c,x=''):R.append(bool(c));print(('PASS ' if c else 'FAIL ')+n,x)
+with sync_playwright() as p:
+    b=p.chromium.launch(executable_path='/opt/pw-browsers/chromium-1194/chrome-linux/chrome',args=['--no-sandbox'])
+    pg=b.new_context(viewport={'width':390,'height':780},has_touch=True,is_mobile=True).new_page();errs=[]
+    pg.on('pageerror',lambda e:errs.append(str(e)));pg.on('dialog',lambda d:d.dismiss() if 'حفظها' in d.message else d.accept());ev=pg.evaluate
+    pg.clock.install();pg.goto('http://localhost:8765/new.html');pg.wait_for_timeout(700)
+    ev('S.players=[{id:"p1",name:"لاعب أ",num:"1",pos:"",status:"نشط",notes:""},{id:"p2",name:"لاعب ب",num:"2",pos:"",status:"نشط",notes:""}]')
+    ev('S.sessions=[{id:"s1",name:"حصة مباشرة",date:"2026-10-14",total:4,goal:"",att:{p2:"a"},eval:"سابقة",ph:[{id:"a",name:"إحماء",min:2,drill:S.drills.find(d=>d.name==="تمطيط وتهدئة").id},{id:"b",name:"رئيسي",min:1,drill:S.drills.find(d=>d.sid==="y16").id,note:"ملاحظتي"},{id:"c",name:"ختام",min:1,drill:""}]}]');ev('save()')
+    snap=ev('JSON.stringify(S)');lib=ev('JSON.stringify(S.drills)');keys=ev('Object.keys(S).join()')
+    ev('go("sess")');pg.click('text=تدريب مباشر >> nth=0');pg.wait_for_timeout(300)
+    ok('live screen opens, phase 1 shown',ev('$("#live").style.display')=='block' and 'إحماء' in ev('$("#live").innerText') and ev('$("#lvc").textContent')=='02:00')
+    ok('drill details+diagram (2 stages) in live view',ev('document.querySelectorAll("#live img").length')==2 and 'السلامة' in ev('$("#live").innerText'))
+    pg.clock.run_for(5000);ok('paused timer does not move',ev('$("#lvc").textContent')=='02:00')
+    pg.click('#lvp');pg.clock.run_for(10000);t=ev('$("#lvc").textContent');ok('running timer counts down',t in('01:50','01:49','01:51'),t)
+    pg.click('text=إيقاف مؤقت');pg.clock.run_for(5000);ok('pause holds',ev('$("#lvc").textContent')==t)
+    ev('lvAdj(1)');ok('+1 min',ev('LV.left')>170)
+    ev('lvGo(1)');ok('next phase + coach note + next label',ev('$("#lvc").textContent')=='01:00' and 'ملاحظتي' in ev('$("#live").innerText') and 'التالي: ختام' in ev('$("#live").innerText'))
+    ev('lvGo(-1)');ok('previous phase returns to its planned+adjusted time (new behaviour)',ev('$("#lvc").textContent')=='03:00');ev('lvGo(1)')
+    pg.click('#lvp');pg.clock.run_for(61500);ok('overtime beep flag + "+" display',ev('LV.beeped')==True and ev('$("#lvc").textContent').startswith('+'),ev('$("#lvc").textContent'))
+    pg.click('#lvp')
+    ev('lvAtt("p1")');ev('lvAtt("p1")');ok("quick attendance cycles (p1 -> غائب)",ev("LV.att.p1")=="a" and ev("$(\"#lap1\").textContent")=="غائب")
+    ev('LV.note="ملاحظة مباشرة"')
+    ok('NOTHING written before explicit save',ev('JSON.stringify(S)')==snap)
+    ev('lvGo(1)');ev('lvGo(1)');ok('finish summary shown',ev('LV.done')==True and 'انتهت الحصة' in ev('$("#live").innerText'))
+    ev('lvSave()');pg.wait_for_timeout(200)
+    s=ev('S.sessions[0]');ok('save writes only att+eval of that session',s['att'].get('p1')=='a' and s['att'].get('p2')=='a' and 'ملاحظة مباشرة' in s['eval'] and s['eval'].startswith('سابقة'))
+    ok('library + DB structure untouched',ev('JSON.stringify(S.drills)')==lib and ev('Object.keys(S).join()')==keys)
+    other=json.loads(snap);o2=json.loads(ev('JSON.stringify(S)'))
+    for d in(other,o2):d['sessions'][0].pop('att');d['sessions'][0].pop('eval')
+    ok('everything else byte-identical',other==o2)
+    ok('finished + saved closes live and clears resume state',ev('$("#live").style.display')=='none' and ev('LV')is None and ev('localStorage.getItem("nsu13_live")')is None)
+    pg.reload();pg.wait_for_timeout(700);ok('saved attendance persists after reload',ev('S.sessions[0].att.p1')=='a')
+    # run again with unsaved changes -> exit asks confirm, discards
+    ev('startLive("s1")');pg.wait_for_timeout(200);ev('lvAtt("p2")');before=ev('JSON.stringify(S)');ev('endLive()');ok('end without saving: DB unchanged, resume state cleared',ev('localStorage.getItem("nsu13_live")')is None and ev('JSON.stringify(S)')==before)
+    ev('go("sess")');ev('startLive("s1")');pg.wait_for_timeout(300);pg.screenshot(path='/tmp/t/live.png')
+    ev('endLive()');ok('no JS errors',not errs,errs[:3]);b.close()
+print('%d/%d'%(sum(R),len(R)))
